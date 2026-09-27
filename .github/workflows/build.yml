@@ -1,0 +1,44 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run host tests
+        run: cargo test --locked
+
+  switch:
+    runs-on: ubuntu-latest
+    container: wuboyth/skyline-plugin-builder:latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build Skyline plugin
+        run: cargo skyline build --release
+
+      - name: Prepare and verify artifact
+        run: |
+          cp target/aarch64-skyline-switch/release/libfeth_bench_exp.nro feth-bench-exp.nro
+          python3 tools/verify_nro.py feth-bench-exp.nro
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: feth-bench-exp
+          path: feth-bench-exp.nro
+          if-no-files-found: error
+          retention-days: 14
