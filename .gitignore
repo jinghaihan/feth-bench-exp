@@ -1,0 +1,5 @@
+/target/
+/*.nro
+/*.zip
+*.DS_Store
+__pycache__/
