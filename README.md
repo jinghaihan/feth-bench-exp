@@ -7,7 +7,7 @@ the units you actually deploy.
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > [!WARNING]
-> Version 0.1.0 is an in-game test build. The stage-clear timing, deployment
+> Current releases are in-game test builds. The stage-clear timing, deployment
 > flags, and save persistence have not yet been verified in Eden or on hardware.
 > Back up your save before enabling it, and test a disposable battle first.
 
