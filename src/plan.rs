@@ -30,6 +30,32 @@ pub fn eligible(unit: UnitSnapshot) -> bool {
     && unit.flags & UNAVAILABLE_OR_DEAD == 0
 }
 
+pub fn diagnostic_status(unit: UnitSnapshot, floor: Option<u8>) -> &'static str {
+  if unit.character < 0 {
+    "empty_slot"
+  } else if !(1..=MAX_LEVEL).contains(&unit.level) {
+    "invalid_level"
+  } else if unit.flags & JOINED == 0 {
+    "not_joined"
+  } else if unit.flags & AVAILABLE == 0 {
+    "not_available"
+  } else if unit.flags & UNAVAILABLE_OR_DEAD != 0 {
+    "unavailable_or_dead"
+  } else if formally_deployed(unit) {
+    "deployed_average_member"
+  } else if let Some(floor) = floor {
+    if unit.level >= floor {
+      "at_or_above_floor"
+    } else if unit.flags & ADJUTANT != 0 {
+      "catch_up_adjutant"
+    } else {
+      "catch_up_bench"
+    }
+  } else {
+    "no_deployed_average"
+  }
+}
+
 pub fn formally_deployed(unit: UnitSnapshot) -> bool {
   eligible(unit) && unit.flags & DEPLOYED != 0 && unit.flags & ADJUTANT == 0
 }
@@ -127,5 +153,97 @@ mod tests {
     let units = [unit(1, 24, DEPLOYED), unit(2, 25, DEPLOYED), unit(3, 1, 0)];
     assert_eq!(catch_up_plan(&units, 3).0, Some(21));
     assert_eq!(catch_up_plan(&units, 7).0, Some(17));
+  }
+
+  #[test]
+  fn diagnostic_reasons_match_recipient_selection() {
+    let units = [
+      unit(1, 25, DEPLOYED),
+      unit(2, 10, 0),
+      unit(3, 10, DEPLOYED | ADJUTANT),
+      unit(4, 20, 0),
+      unit(5, 1, 1 << 3),
+      unit(6, 1, 1 << 2),
+      UnitSnapshot {
+        character: -1,
+        ..unit(7, 1, 0)
+      },
+      unit(8, 0, 0),
+      UnitSnapshot {
+        flags: AVAILABLE,
+        ..unit(9, 1, 0)
+      },
+      UnitSnapshot {
+        flags: JOINED,
+        ..unit(10, 1, 0)
+      },
+    ];
+    let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+    let statuses: Vec<_> = units
+      .iter()
+      .map(|unit| diagnostic_status(*unit, floor))
+      .collect();
+    assert_eq!(
+      statuses,
+      [
+        "deployed_average_member",
+        "catch_up_bench",
+        "catch_up_adjutant",
+        "at_or_above_floor",
+        "unavailable_or_dead",
+        "unavailable_or_dead",
+        "empty_slot",
+        "invalid_level",
+        "not_joined",
+        "not_available",
+      ]
+    );
+    for unit in units {
+      let status = diagnostic_status(unit, floor);
+      assert_eq!(
+        recipients
+          .iter()
+          .any(|recipient| recipient.character == unit.character),
+        status == "catch_up_bench" || status == "catch_up_adjutant"
+      );
+    }
+    assert_eq!(
+      diagnostic_status(unit(1, 10, 0), None),
+      "no_deployed_average"
+    );
+    assert_eq!(
+      diagnostic_status(unit(1, 99, 0), Some(20)),
+      "at_or_above_floor"
+    );
+  }
+
+  #[test]
+  fn diagnostic_status_agrees_with_all_flag_combinations() {
+    for flags in 0..32 {
+      for deployment in [0, DEPLOYED, ADJUTANT, DEPLOYED | ADJUTANT] {
+        for character in [-1, 1, 1045] {
+          for level in [0, 1, 19, 20, 99, 100] {
+            let unit = UnitSnapshot {
+              character,
+              level,
+              flags: flags | deployment,
+            };
+            let status = diagnostic_status(unit, Some(20));
+            assert_eq!(
+              status == "catch_up_bench" || status == "catch_up_adjutant",
+              eligible(unit) && !formally_deployed(unit) && unit.level < 20,
+              "{unit:?} -> {status}"
+            );
+          }
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn low_deployed_average_cannot_raise_a_bench_unit() {
+    let units = [unit(1, 4, DEPLOYED), unit(2, 1, 0)];
+    assert_eq!(catch_up_plan(&units, LEVEL_GAP), (Some(0), vec![]));
+    assert_eq!(diagnostic_status(units[1], Some(0)), "at_or_above_floor");
   }
 }

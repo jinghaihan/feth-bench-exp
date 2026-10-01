@@ -4,6 +4,12 @@ pub mod plan;
 
 pub mod game;
 
+#[cfg(any(test, target_os = "switch"))]
+mod config;
+
+#[cfg(target_os = "switch")]
+mod diagnostics;
+
 #[cfg(target_os = "switch")]
 mod plugin;
 

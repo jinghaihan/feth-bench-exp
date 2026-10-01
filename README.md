@@ -55,6 +55,53 @@ This interaction still needs an in-game test.
 The gap is the `LEVEL_GAP` constant in `src/plan.rs`. Change it from `5` to
 `3` or `7` and rebuild the NRO to select a different floor.
 
+## Diagnostic log
+
+File logging is optional and disabled by default. Put `feth-bench-exp.cfg` in
+the root of the emulated SD card (or the console's SD card), not alongside the
+NRO:
+
+```text
+diagnostic_log=true
+```
+
+Fully restart the game and emulator. The plugin appends to
+`sdmc:/feth-bench-exp.log`, preserving earlier sessions. Missing or invalid
+configuration disables file logging without disabling catch-up EXP.
+
+The log includes:
+
+- Game version, every executable signature check, and whether the hook was
+  installed. A signature mismatch includes its offset, expected instruction,
+  and actual instruction.
+- Each stage-clear hook entry, the deployed level sum and count, rounded-down
+  average, gap, target floor, and number of recipients.
+- Every roster slot's character ID, level, EXP, raw flags, and selection result,
+  including empty, unrecruited, unavailable/dead, deployed, and already-high
+  enough units. Adjutants are distinguished from ordinary bench recipients.
+- Each next-level threshold and EXP amount passed to the game's EXP function,
+  its observed result, and any reason catch-up stopped.
+- Roster levels and EXP again after the original stage-clear function returns,
+  to detect immediate overwrites. This does not prove that a later manual save
+  will persist the change.
+
+For example, a deployed average of 20 produces a target of 15. A bench unit
+already at level 15 will not gain EXP. If the file contains startup checks but
+no `stage_clear` entries after a victory, the selected hook did not run; if
+there are entries, the plan and per-unit reasons show why catch-up did or did
+not happen.
+
+The logger uses a separate SD mount from the durability plugin and stops
+writing at 2 MiB. Logging may slow the stage-clear screen. After testing, set
+`diagnostic_log=false` or remove the configuration and fully restart. If the
+log reaches its limit, move it aside before the next launch. A log-file I/O
+failure stops logging, not the existing gameplay hook.
+
+Win one ordinary battle with logging enabled, check the bench units afterward,
+then send `feth-bench-exp.log` and the emulator log if available. No action-by-action
+notes are needed. If no file appears, the emulator log is needed to distinguish
+a plugin load failure from an incorrect SD path or a file I/O error.
+
 ## First test
 
 1. Back up a save, then record one deployed unit's level and one low-level

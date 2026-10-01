@@ -5,7 +5,10 @@ use core::{
   sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::plan::{UnitSnapshot, MAX_LEVEL};
+use crate::{
+  diagnostics,
+  plan::{UnitSnapshot, MAX_LEVEL},
+};
 
 use super::profile;
 
@@ -32,12 +35,19 @@ impl Runtime {
   }
 
   fn detect() -> Option<Self> {
-    if skyline::info::get_program_id() != profile::TITLE_ID {
+    let program_id = skyline::info::get_program_id();
+    diagnostics::log!(
+      "program_id={:#018x} expected={:#018x}",
+      program_id,
+      profile::TITLE_ID
+    );
+    if program_id != profile::TITLE_ID {
       return None;
     }
     let mut version = skyline::nn::oe::DisplayVersion { name: [0; 16] };
     // SAFETY: the OS writes one DisplayVersion into this valid out-pointer.
     unsafe { skyline::nn::oe::GetDisplayVersion(&mut version) };
+    diagnostics::log!("display_version={:?}", version.name);
     if !profile::is_supported_display_version(&version.name) {
       return None;
     }
@@ -46,10 +56,21 @@ impl Runtime {
       skyline::hooks::getRegionAddress(skyline::hooks::Region::Text).cast::<u8>()
     })?;
     let runtime = Self { text };
-    if !profile::matches_text_signatures(|offset| {
+    diagnostics::log!("text_base={:p}", text.as_ptr());
+    let mut matched = true;
+    for (offset, expected) in profile::TEXT_SIGNATURES {
       // SAFETY: signatures are aligned addresses inside the mapped 1.2.0 text.
-      unsafe { runtime.address(offset).cast::<u32>().read_volatile() }
-    }) {
+      let actual = unsafe { runtime.address(offset).cast::<u32>().read_volatile() };
+      diagnostics::log!(
+        "signature offset={:#x} expected={:#010x} actual={:#010x} matched={}",
+        offset,
+        expected,
+        actual,
+        actual == expected
+      );
+      matched &= actual == expected;
+    }
+    if !matched {
       return None;
     }
     Some(runtime)
@@ -99,32 +120,89 @@ impl Runtime {
     unsafe { unit.as_ptr().add(0x4A).read() }
   }
 
-  unsafe fn current_exp(unit: NonNull<u8>) -> u16 {
+  pub unsafe fn current_exp(unit: NonNull<u8>) -> u16 {
     // SAFETY: Unit has a two-byte EXP field at +0x2C.
     unsafe { unit.as_ptr().add(0x2C).cast::<u16>().read_unaligned() }
   }
 
   fn exp_threshold(self, level: u8) -> Option<u16> {
     if level == 0 || level >= MAX_LEVEL {
+      diagnostics::log!("exp_table level={} reason=invalid_level", level);
       return None;
     }
-    let table_slot = self.global_pointer(profile::EXP_TABLE_POINTER_OFFSET)?;
+    let Some(table_slot) = self.global_pointer(profile::EXP_TABLE_POINTER_OFFSET) else {
+      diagnostics::log!(
+        "exp_table level={} reason=global_pointer_null offset={:#x}",
+        level,
+        profile::EXP_TABLE_POINTER_OFFSET
+      );
+      return None;
+    };
+    diagnostics::log!(
+      "exp_table level={} phase=global table_slot={:p}",
+      level,
+      table_slot.as_ptr()
+    );
     // SAFETY: the game's ADD_EXP routine dereferences this same global slot.
-    let table = NonNull::new(unsafe { table_slot.as_ptr().cast::<*mut u8>().read() })?;
+    let Some(table) = NonNull::new(unsafe { table_slot.as_ptr().cast::<*mut u8>().read() }) else {
+      diagnostics::log!("exp_table level={} reason=table_pointer_null", level);
+      return None;
+    };
+    diagnostics::log!(
+      "exp_table level={} phase=table table={:p}",
+      level,
+      table.as_ptr()
+    );
     // SAFETY: ADD_EXP reads a descriptor pointer at +0x938, then its count
     // at descriptor +4 before selecting a 24-byte table entry.
     let descriptor_slot = unsafe { table.as_ptr().add(0x938).cast::<*const u8>() };
-    let descriptor = NonNull::new(unsafe { descriptor_slot.read_unaligned().cast_mut() })?;
+    let Some(descriptor) = NonNull::new(unsafe { descriptor_slot.read_unaligned().cast_mut() })
+    else {
+      diagnostics::log!("exp_table level={} reason=descriptor_pointer_null", level);
+      return None;
+    };
+    diagnostics::log!(
+      "exp_table level={} phase=descriptor descriptor={:p}",
+      level,
+      descriptor.as_ptr()
+    );
     let count = unsafe { descriptor.as_ptr().add(4).cast::<u32>().read_unaligned() };
     let index = usize::from(level - 1);
     if count <= index as u32 || count > 256 {
+      diagnostics::log!(
+        "exp_table level={} count={} index={} reason=invalid_count",
+        level,
+        count,
+        index
+      );
       return None;
     }
     // SAFETY: the table stores 24-byte entries starting at +8 with a pointer
     // at entry +8. The count above bounds the requested index.
     let entry_pointer = unsafe { table.as_ptr().add(16 + index * 24).cast::<*const u8>() };
-    let entry = NonNull::new(unsafe { entry_pointer.read_unaligned().cast_mut() })?;
+    let Some(entry) = NonNull::new(unsafe { entry_pointer.read_unaligned().cast_mut() }) else {
+      diagnostics::log!(
+        "exp_table level={} count={} index={} reason=entry_pointer_null",
+        level,
+        count,
+        index
+      );
+      return None;
+    };
+    diagnostics::log!(
+      "exp_table level={} phase=entry entry={:p}",
+      level,
+      entry.as_ptr()
+    );
     let threshold = unsafe { entry.as_ptr().cast::<u16>().read_unaligned() };
+    diagnostics::log!(
+      "exp_table level={} count={} index={} threshold={} valid={}",
+      level,
+      count,
+      index,
+      threshold,
+      (1..=1000).contains(&threshold)
+    );
     (1..=1000).contains(&threshold).then_some(threshold)
   }
 
@@ -144,10 +222,20 @@ impl Runtime {
         return Err("EXP exceeds next threshold");
       }
       let amount = i32::from(threshold - current);
+      diagnostics::log!("add_exp phase=before unit={:p} offset={:#x} level={} exp={} threshold={} amount={} target={}",
+        unit.as_ptr(), profile::ADD_EXP_OFFSET, level, current, threshold, amount, target);
       // SAFETY: this live Unit belongs to the save, and amount is exactly the
       // difference to the game's own next-level threshold.
       unsafe { add_exp(unit.as_ptr().cast(), amount) };
-      if unsafe { Self::level(unit) } != level + 1 {
+      let after_level = unsafe { Self::level(unit) };
+      diagnostics::log!(
+        "add_exp phase=after unit={:p} expected_level={} actual_level={} exp={}",
+        unit.as_ptr(),
+        level + 1,
+        after_level,
+        unsafe { Self::current_exp(unit) }
+      );
+      if after_level != level + 1 {
         return Err("vanilla EXP call did not advance exactly one level");
       }
     }
