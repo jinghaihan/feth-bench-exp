@@ -20,6 +20,8 @@ the units you actually deploy.
 
 ## Install
 
+### Nintendo Switch (Atmosphere)
+
 Download the NRO or installable ZIP from
 [Releases](https://github.com/jinghaihan/feth-bench-exp/releases). With the
 FE3H Skyline loader already installed, copy the NRO to:
@@ -27,6 +29,12 @@ FE3H Skyline loader already installed, copy the NRO to:
 ```text
 sdmc:/atmosphere/contents/010055D009F78000/romfs/skyline/plugins/feth-bench-exp.nro
 ```
+
+Fully restart the game after installation. To disable the plugin, remove the
+NRO and restart the game. The ZIP contains this plugin only, not the Skyline
+loader. Do not replace other plugins when merging directories.
+
+### Emulators (Eden)
 
 On Eden, merge the ZIP into the emulator's **emulated SD card**, not its
 ordinary game-mod folder. On Windows, this is typically `%AppData%\eden\sdmc`.
@@ -58,14 +66,14 @@ The gap is the `LEVEL_GAP` constant in `src/plan.rs`. Change it from `5` to
 ## Diagnostic log
 
 File logging is optional and disabled by default. Put `feth-bench-exp.cfg` in
-the root of the emulated SD card (or the console's SD card), not alongside the
-NRO:
+the root of the console's SD card (or the emulator's virtual SD card), not
+alongside the NRO:
 
 ```text
 diagnostic_log=true
 ```
 
-Fully restart the game and emulator. The plugin appends to
+Fully restart the game (and the emulator, if used). The plugin appends to
 `sdmc:/feth-bench-exp.log`, preserving earlier sessions. Missing or invalid
 configuration disables file logging without disabling catch-up EXP.
 
