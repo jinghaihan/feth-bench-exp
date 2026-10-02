@@ -1,6 +1,6 @@
 //! Side-effect-free selection of a victory's catch-up recipients.
 
-pub const LEVEL_GAP: u8 = 5;
+pub const LEVEL_GAP: u8 = 3;
 pub const MAX_LEVEL: u8 = 99;
 
 const AVAILABLE: u32 = 1 << 0;
@@ -110,7 +110,7 @@ mod tests {
       unit(4, 8, DEPLOYED | ADJUTANT),
       unit(5, 12, 0),
     ];
-    let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+    let (floor, recipients) = catch_up_plan(&units, 5);
     assert_eq!(floor, Some(20));
     assert_eq!(recipients.len(), 2);
     assert_eq!(recipients[0].character, 4);
@@ -134,7 +134,7 @@ mod tests {
       unavailable,
       unit(6, 24, 0),
     ];
-    let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+    let (floor, recipients) = catch_up_plan(&units, 5);
     assert_eq!(floor, Some(25));
     assert_eq!(recipients.len(), 1);
     assert_eq!(recipients[0].character, 6);
@@ -145,7 +145,7 @@ mod tests {
     let units = [unit(1, 10, 0), unit(2, 12, ADJUTANT)];
     assert_eq!(catch_up_plan(&units, LEVEL_GAP), (None, vec![]));
     let units = [unit(1, 20, DEPLOYED), unit(2, 20, 0), unit(3, 15, 0)];
-    assert_eq!(catch_up_plan(&units, LEVEL_GAP), (Some(15), vec![]));
+    assert_eq!(catch_up_plan(&units, 5), (Some(15), vec![]));
   }
 
   #[test]
@@ -153,6 +153,24 @@ mod tests {
     let units = [unit(1, 24, DEPLOYED), unit(2, 25, DEPLOYED), unit(3, 1, 0)];
     assert_eq!(catch_up_plan(&units, 3).0, Some(21));
     assert_eq!(catch_up_plan(&units, 7).0, Some(17));
+    assert_eq!(catch_up_plan(&units, 0).0, Some(24));
+    assert_eq!(catch_up_plan(&units, 99), (Some(0), vec![]));
+  }
+
+  #[test]
+  fn default_gap_is_three_and_only_raises_units_below_the_floor() {
+    assert_eq!(LEVEL_GAP, 3);
+    let units = [unit(1, 7, DEPLOYED), unit(2, 3, 0), unit(3, 5, 0)];
+    let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+    assert_eq!(floor, Some(4));
+    assert_eq!(
+      recipients,
+      vec![CatchUp {
+        character: 2,
+        from_level: 3,
+        target_level: 4
+      }]
+    );
   }
 
   #[test]
@@ -178,7 +196,7 @@ mod tests {
         ..unit(10, 1, 0)
       },
     ];
-    let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+    let (floor, recipients) = catch_up_plan(&units, 5);
     let statuses: Vec<_> = units
       .iter()
       .map(|unit| diagnostic_status(*unit, floor))
@@ -243,7 +261,7 @@ mod tests {
   #[test]
   fn low_deployed_average_cannot_raise_a_bench_unit() {
     let units = [unit(1, 4, DEPLOYED), unit(2, 1, 0)];
-    assert_eq!(catch_up_plan(&units, LEVEL_GAP), (Some(0), vec![]));
-    assert_eq!(diagnostic_status(units[1], Some(0)), "at_or_above_floor");
+    assert_eq!(catch_up_plan(&units, LEVEL_GAP), (Some(1), vec![]));
+    assert_eq!(diagnostic_status(units[1], Some(1)), "at_or_above_floor");
   }
 }

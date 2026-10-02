@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use crate::{
   diagnostics,
@@ -8,9 +8,11 @@ use crate::{
 
 static PROCESSING: AtomicBool = AtomicBool::new(false);
 static STAGE_CLEAR_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CONFIGURED_LEVEL_GAP: AtomicU8 = AtomicU8::new(LEVEL_GAP);
 
 pub fn install() {
-  diagnostics::init();
+  let settings = diagnostics::init();
+  CONFIGURED_LEVEL_GAP.store(settings.level_gap, Ordering::Release);
   if !Runtime::initialize() {
     diagnostics::log!("hooks=not_installed reason=unsupported_or_modified_game");
     println!("[feth-bench-exp] unsupported or modified game; hook not installed");
@@ -21,7 +23,7 @@ pub fn install() {
     "hooks=installed stage_clear_offset={:#x} add_exp_offset={:#x} level_gap={}",
     profile::STAGE_CLEAR_UI_OFFSET,
     profile::ADD_EXP_OFFSET,
-    LEVEL_GAP
+    settings.level_gap
   );
   println!("[feth-bench-exp] stage-clear catch-up hook installed");
 }
@@ -91,7 +93,8 @@ fn run_catch_up(event: usize) {
     units.push(unsafe { Runtime::snapshot(unit) });
   }
 
-  let (floor, recipients) = catch_up_plan(&units, LEVEL_GAP);
+  let level_gap = CONFIGURED_LEVEL_GAP.load(Ordering::Acquire);
+  let (floor, recipients) = catch_up_plan(&units, level_gap);
   if diagnostics::enabled() {
     let (sum, fighters) = units
       .iter()
@@ -105,7 +108,7 @@ fn run_catch_up(event: usize) {
       fighters,
       sum,
       sum.checked_div(fighters),
-      LEVEL_GAP,
+      level_gap,
       floor,
       recipients.len()
     );

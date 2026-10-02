@@ -6,11 +6,6 @@ the units you actually deploy.
 [![build](https://github.com/jinghaihan/feth-bench-exp/actions/workflows/build.yml/badge.svg)](https://github.com/jinghaihan/feth-bench-exp/actions/workflows/build.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> [!WARNING]
-> Current releases are in-game test builds. The stage-clear timing, deployment
-> flags, and save persistence have not yet been verified in Eden or on hardware.
-> Back up your save before enabling it, and test a disposable battle first.
-
 ## Requirements
 
 - Fire Emblem: Three Houses **1.2.0**, Build ID
@@ -19,6 +14,8 @@ the units you actually deploy.
   [Aldebaran](https://github.com/three-houses-research-team/aldebaran-rs)
 
 ## Install
+
+Back up your saves before installing the plugin.
 
 ### Nintendo Switch (Atmosphere)
 
@@ -45,9 +42,10 @@ restart the emulator. Do not replace other plugins when merging directories.
 ## Behavior
 
 At the battle stage-clear screen, the plugin calculates the integer average
-level of formally deployed, currently usable player units and subtracts **5**.
-It then brings eligible undeployed recruits below that floor up to it. Adjutants
-count as benched units: they receive their normal battle EXP first, then only
+level of formally deployed, currently usable player units and subtracts **3**
+by default. It then brings eligible undeployed recruits below that floor up to
+it. Adjutants count as benched units: they receive their normal battle EXP first,
+then only
 the catch-up needed to reach the floor. Units already at or above the floor
 are unchanged. Dead, unavailable, and unrecruited units are excluded.
 
@@ -58,24 +56,32 @@ of its own, but any earned EXP and stat gains can be saved normally and are not
 undone by removing the plugin. It is designed to coexist with
 [`feth-fixed-growths`](https://github.com/jinghaihan/feth-fixed-growths): the
 game's level-up function calls the fixed-growth hook if both are active.
-This interaction still needs an in-game test.
 
-The gap is the `LEVEL_GAP` constant in `src/plan.rs`. Change it from `5` to
-`3` or `7` and rebuild the NRO to select a different floor.
+## Configuration
+
+Put `feth-bench-exp.cfg` in the root of the console's SD card (or the
+emulator's virtual SD card), not alongside the NRO:
+
+```ini
+level_gap=3
+diagnostic_log=true
+log_max_kib=2048
+```
+
+All settings are optional. `level_gap` accepts 0–99; 0 catches bench units up
+to the rounded-down deployed average. It works even with logging disabled.
+`diagnostic_log` defaults to `false`. `log_max_kib` accepts 64–65536 KiB and
+defaults to 2048 KiB (2 MiB). Existing files containing only `diagnostic_log`
+remain supported. Missing or invalid configuration uses the defaults.
+
+Fully restart the game (and the emulator, if used) after changing settings.
 
 ## Diagnostic log
 
-File logging is optional and disabled by default. Put `feth-bench-exp.cfg` in
-the root of the console's SD card (or the emulator's virtual SD card), not
-alongside the NRO:
-
-```text
-diagnostic_log=true
-```
-
-Fully restart the game (and the emulator, if used). The plugin appends to
-`sdmc:/feth-bench-exp.log`, preserving earlier sessions. Missing or invalid
-configuration disables file logging without disabling catch-up EXP.
+When enabled, the plugin writes to `sdmc:/feth-bench-exp.log`. Once the size
+limit is reached, it drops the oldest complete lines, keeps roughly the newest
+half, and continues writing. An existing oversized log is trimmed the same way.
+It does not stop logging just because the file is full.
 
 The log includes:
 
@@ -93,32 +99,30 @@ The log includes:
   to detect immediate overwrites. This does not prove that a later manual save
   will persist the change.
 
-For example, a deployed average of 20 produces a target of 15. A bench unit
-already at level 15 will not gain EXP. If the file contains startup checks but
-no `stage_clear` entries after a victory, the selected hook did not run; if
-there are entries, the plan and per-unit reasons show why catch-up did or did
-not happen.
+For example, the default gap with a deployed average of 20 produces a target
+of 17. A bench unit already at level 17 will not gain EXP. If the file contains
+startup checks but no `stage_clear` entries after a victory, the selected hook
+did not run; if there are entries, the plan and per-unit reasons show why
+catch-up did or did not happen.
 
-The logger uses a separate SD mount from the durability plugin and stops
-writing at 2 MiB. Logging may slow the stage-clear screen. After testing, set
-`diagnostic_log=false` or remove the configuration and fully restart. If the
-log reaches its limit, move it aside before the next launch. A log-file I/O
-failure stops logging, not the existing gameplay hook.
+The logger uses a separate SD mount from the durability plugin. Logging may
+slow the game; set `diagnostic_log=false` and fully restart when diagnostics
+are no longer needed. A log-file I/O failure stops logging, not catch-up EXP.
 
 Win one ordinary battle with logging enabled, check the bench units afterward,
 then send `feth-bench-exp.log` and the emulator log if available. No action-by-action
 notes are needed. If no file appears, the emulator log is needed to distinguish
 a plugin load failure from an incorrect SD path or a file I/O error.
 
-## First test
+## Checking catch-up
 
 1. Back up a save, then record one deployed unit's level and one low-level
    bench unit's level, EXP, and stats.
 2. Win one short battle without deploying the bench unit. Include an adjutant
    if possible.
 3. After the stage-clear screen and a manual save, check whether the bench
-   unit rose toward `floor(deployed average) - 5`; deployed units should get
-   only their original EXP.
+   unit rose toward `floor(deployed average) - level_gap`; deployed units
+   should get only their original EXP.
 4. Reload that save and confirm that the levels and stats persist. If the game
    crashes, remove only `feth-bench-exp.nro`, keep the backed-up save, and
    provide Eden's log and the point of failure.

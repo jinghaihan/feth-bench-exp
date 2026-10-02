@@ -7,6 +7,9 @@ pub mod game;
 #[cfg(any(test, target_os = "switch"))]
 mod config;
 
+#[cfg(any(test, target_os = "switch"))]
+mod rolling_log;
+
 #[cfg(target_os = "switch")]
 mod diagnostics;
 
