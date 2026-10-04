@@ -1,5 +1,7 @@
 //! Side-effect-free selection of a victory's catch-up recipients.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 pub const LEVEL_GAP: u8 = 3;
 pub const MAX_LEVEL: u8 = 99;
 
@@ -16,11 +18,133 @@ pub struct UnitSnapshot {
   pub flags: u32,
 }
 
+/// Battle actors' participation, side and adjutant state are authoritative.
+/// Save deployment flags can be set after the actor was copied from the save.
+pub fn battle_snapshot(unit: UnitSnapshot, state: u8, side: u8) -> Option<UnitSnapshot> {
+  if state & 1 == 0 || side != 0 {
+    return None;
+  }
+  Some(UnitSnapshot {
+    flags: (unit.flags & !(DEPLOYED | ADJUTANT))
+      | DEPLOYED
+      | if state & 0x20 != 0 { ADJUTANT } else { 0 },
+    ..unit
+  })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatchUp {
   pub character: i16,
   pub from_level: u8,
   pub target_level: u8,
+}
+
+/// Armed by battle actor initialization; consumed even when exiting by retreat.
+pub struct BattleCycle(AtomicBool);
+
+impl BattleCycle {
+  pub const fn new() -> Self {
+    Self(AtomicBool::new(false))
+  }
+
+  pub fn begin(&self) {
+    self.0.store(true, Ordering::Release);
+  }
+
+  pub fn finish(&self, mode: Option<u32>) -> bool {
+    self.0.swap(false, Ordering::AcqRel) && mode == Some(0)
+  }
+}
+
+impl Default for BattleCycle {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+/// IDs, not save pointers or levels: cleanup changes flags and writes battle
+/// copies back into the save. Only the settled levels belong in the average.
+#[derive(Debug)]
+pub struct BattleRoster {
+  fighters: Vec<i16>,
+  adjutants: Vec<i16>,
+}
+
+impl BattleRoster {
+  pub fn capture(units: &[UnitSnapshot]) -> Option<Self> {
+    let mut seen = Vec::new();
+    for unit in units.iter().filter(|unit| eligible(**unit)) {
+      if seen.contains(&unit.character) {
+        return None;
+      }
+      seen.push(unit.character);
+    }
+    let fighters: Vec<_> = units
+      .iter()
+      .copied()
+      .filter(|unit| formally_deployed(*unit))
+      .map(|unit| unit.character)
+      .collect();
+    if fighters.is_empty() {
+      return None;
+    }
+    let adjutants = units
+      .iter()
+      .filter(|unit| eligible(**unit) && unit.flags & ADJUTANT != 0)
+      .map(|unit| unit.character)
+      .collect();
+    Some(Self {
+      fighters,
+      adjutants,
+    })
+  }
+
+  pub fn fighters(&self) -> &[i16] {
+    &self.fighters
+  }
+
+  pub fn is_adjutant(&self, character: i16) -> bool {
+    self.adjutants.contains(&character)
+  }
+
+  pub fn plan(&self, settled: &[UnitSnapshot], gap: u8) -> (Option<u8>, Vec<CatchUp>) {
+    // Missing or duplicate records must not silently shrink the average.
+    for character in &self.fighters {
+      if settled
+        .iter()
+        .filter(|unit| unit.character == *character)
+        .count()
+        != 1
+      {
+        return (None, Vec::new());
+      }
+    }
+    for (index, unit) in settled
+      .iter()
+      .enumerate()
+      .filter(|(_, unit)| eligible(**unit))
+    {
+      if settled[..index]
+        .iter()
+        .any(|earlier| earlier.character == unit.character)
+      {
+        return (None, Vec::new());
+      }
+    }
+    let normalized: Vec<_> = settled
+      .iter()
+      .map(|unit| UnitSnapshot {
+        flags: (unit.flags & !(DEPLOYED | ADJUTANT))
+          | if self.fighters.contains(&unit.character) {
+            DEPLOYED
+          } else {
+            0
+          },
+        ..*unit
+      })
+      .collect();
+    catch_up_plan(&normalized, gap)
+  }
 }
 
 pub fn eligible(unit: UnitSnapshot) -> bool {
@@ -99,6 +223,181 @@ mod tests {
       level,
       flags: ACTIVE | extra_flags,
     }
+  }
+
+  #[test]
+  fn actual_battle_roles_override_stale_save_flags_and_exclude_other_sides() {
+    assert_eq!(
+      battle_snapshot(unit(1, 18, 0), 3, 0),
+      Some(unit(1, 18, DEPLOYED))
+    );
+    assert_eq!(
+      battle_snapshot(unit(16, 10, 0), 0x23, 0),
+      Some(unit(16, 10, DEPLOYED | ADJUTANT))
+    );
+    assert_eq!(
+      battle_snapshot(unit(1, 18, ADJUTANT), 3, 0),
+      Some(unit(1, 18, DEPLOYED))
+    );
+    assert_eq!(battle_snapshot(unit(1, 18, DEPLOYED), 0, 0), None);
+    assert_eq!(battle_snapshot(unit(1, 18, DEPLOYED), 3, 1), None);
+    assert_eq!(battle_snapshot(unit(1, 18, DEPLOYED), 3, 2), None);
+  }
+
+  #[test]
+  fn settled_save_uses_frozen_ids_not_cleared_deployment_flags() {
+    // Latest slot00: ten fighters total 154, Mercedes Lv10, Ingrid Lv12,
+    // Leonie Lv14, ordinary bench Lv14. The correct floor is 12, not 15.
+    let levels = [18, 15, 14, 15, 16, 15, 15, 15, 16, 15];
+    let mut battle: Vec<_> = levels
+      .iter()
+      .enumerate()
+      .map(|(index, level)| unit(index as i16, *level, DEPLOYED))
+      .collect();
+    battle.extend([
+      unit(16, 10, DEPLOYED | ADJUTANT),
+      unit(18, 12, DEPLOYED | ADJUTANT),
+      unit(25, 14, DEPLOYED | ADJUTANT),
+      unit(40, 14, 0),
+      unit(41, 11, 0),
+    ]);
+    let roster = BattleRoster::capture(&battle).unwrap();
+    let settled: Vec<_> = battle
+      .iter()
+      .map(|u| UnitSnapshot {
+        flags: ACTIVE | if u.character == 0 { DEPLOYED } else { 0 },
+        ..*u
+      })
+      .collect();
+    assert_eq!(catch_up_plan(&settled, 3).0, Some(15));
+    let (floor, recipients) = roster.plan(&settled, 3);
+    assert_eq!(floor, Some(12));
+    assert_eq!(
+      recipients,
+      [
+        CatchUp {
+          character: 16,
+          from_level: 10,
+          target_level: 12
+        },
+        CatchUp {
+          character: 41,
+          from_level: 11,
+          target_level: 12
+        },
+      ]
+    );
+    assert!(roster.is_adjutant(16));
+    assert!(!roster.is_adjutant(40));
+  }
+
+  #[test]
+  fn uses_final_levels_after_battle_copy_writeback_and_slot_reordering() {
+    let before = [
+      unit(1, 20, DEPLOYED),
+      unit(2, 20, DEPLOYED),
+      unit(3, 9, DEPLOYED | ADJUTANT),
+      unit(4, 8, 0),
+    ];
+    let roster = BattleRoster::capture(&before).unwrap();
+    let settled = [
+      unit(4, 8, 0),
+      unit(3, 18, 0),
+      unit(2, 24, 0),
+      unit(1, 22, 0),
+    ];
+    let (floor, recipients) = roster.plan(&settled, 3);
+    assert_eq!(floor, Some(20));
+    assert_eq!(
+      recipients,
+      [
+        CatchUp {
+          character: 4,
+          from_level: 8,
+          target_level: 20
+        },
+        CatchUp {
+          character: 3,
+          from_level: 18,
+          target_level: 20
+        },
+      ]
+    );
+    let mut caught_up = settled;
+    caught_up[0].level = 20;
+    caught_up[1].level = 20;
+    assert_eq!(roster.plan(&caught_up, 3), (Some(20), vec![]));
+  }
+
+  #[test]
+  fn frozen_fighters_never_become_recipients_even_when_below_average() {
+    let battle = [
+      unit(1, 30, DEPLOYED),
+      unit(2, 10, DEPLOYED),
+      unit(3, 5, ADJUTANT),
+    ];
+    let roster = BattleRoster::capture(&battle).unwrap();
+    let settled = battle.map(|u| UnitSnapshot { flags: ACTIVE, ..u });
+    let (_, recipients) = roster.plan(&settled, 0);
+    assert_eq!(
+      recipients,
+      [CatchUp {
+        character: 3,
+        from_level: 5,
+        target_level: 20
+      }]
+    );
+  }
+
+  #[test]
+  fn missing_or_duplicate_fighters_abort_instead_of_using_only_byleth() {
+    let battle = [unit(1, 18, DEPLOYED), unit(2, 14, DEPLOYED), unit(3, 10, 0)];
+    let roster = BattleRoster::capture(&battle).unwrap();
+    assert_eq!(roster.plan(&[battle[0], battle[2]], 3), (None, vec![]));
+    assert_eq!(
+      roster.plan(&[battle[0], battle[1], battle[1]], 3),
+      (None, vec![])
+    );
+    assert_eq!(
+      roster.plan(&[battle[0], battle[1], battle[2], battle[2]], 3),
+      (None, vec![])
+    );
+    assert!(BattleRoster::capture(&[battle[0], battle[0]]).is_none());
+    assert!(BattleRoster::capture(&[battle[2]]).is_none());
+  }
+
+  #[test]
+  fn unavailable_units_remain_excluded_after_settlement() {
+    let battle = [
+      unit(1, 20, DEPLOYED),
+      unit(2, 18, DEPLOYED),
+      unit(3, 10, ADJUTANT),
+    ];
+    let roster = BattleRoster::capture(&battle).unwrap();
+    let settled = [unit(1, 20, 0), unit(2, 18, 1 << 3), unit(3, 10, 1 << 2)];
+    assert_eq!(roster.plan(&settled, 3), (Some(17), vec![]));
+  }
+
+  #[test]
+  fn each_battle_can_finish_only_once_including_retreat_and_next_battle() {
+    let cycle = BattleCycle::new();
+    assert!(!cycle.finish(Some(0)));
+    cycle.begin();
+    cycle.begin(); // Initialization can be repeated during map loading.
+    assert!(cycle.finish(Some(0)));
+    for _ in 0..500 {
+      assert!(!cycle.finish(Some(0)));
+    }
+    cycle.begin();
+    assert!(!cycle.finish(Some(5))); // Retreat consumes the cycle, without EXP.
+    assert!(!cycle.finish(Some(0)));
+    for mode in [Some(3), Some(1), None] {
+      cycle.begin();
+      assert!(!cycle.finish(mode));
+      assert!(!cycle.finish(Some(0)));
+    }
+    cycle.begin();
+    assert!(cycle.finish(Some(0)));
   }
 
   #[test]

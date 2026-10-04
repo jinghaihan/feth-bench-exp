@@ -41,13 +41,21 @@ restart the emulator. Do not replace other plugins when merging directories.
 
 ## Behavior
 
-At the battle stage-clear screen, the plugin calculates the integer average
-level of formally deployed, currently usable player units and subtracts **3**
-by default. It then brings eligible undeployed recruits below that floor up to
-it. Adjutants count as benched units: they receive their normal battle EXP first,
-then only
-the catch-up needed to reach the floor. Units already at or above the floor
-are unchanged. Dead, unavailable, and unrecruited units are excluded.
+On the normal battle-result exit path, the plugin captures the IDs of actual
+player-side fighters and adjutants from the battle actors before cleanup.
+After the game writes those actors back and finishes cleanup, it calculates
+the integer average of the settled levels of those fighters and subtracts
+**3** by default. Save deployment flags cleared during cleanup do not change
+the captured roster. Eligible bench units and adjutants below the floor are
+then brought up to it; adjutants keep their normal battle EXP first. Units
+already at or above the floor are unchanged. Dead, unavailable, and
+unrecruited units are excluded. Actual fighters never receive catch-up EXP.
+
+Each initialized battle can trigger catch-up only once. Retreat and the
+alternative event/rewind exit paths do not grant catch-up. Missing or duplicate
+fighter records, a changed save pointer, or an empty valid fighter roster
+cause catch-up to be skipped rather than calculating from a partial roster.
+The old, repeatedly invoked stage-clear UI activation hook is no longer used.
 
 EXP is granted one level at a time through the game's 1.2.0 EXP/level-up
 function. The plugin does not directly write a unit's level or change skill
@@ -88,20 +96,22 @@ The log includes:
 - Game version, every executable signature check, and whether the hook was
   installed. A signature mismatch includes its offset, expected instruction,
   and actual instruction.
-- Each stage-clear hook entry, the deployed level sum and count, rounded-down
-  average, gap, target floor, and number of recipients.
-- Every roster slot's character ID, level, EXP, raw flags, and selection result,
-  including empty, unrecruited, unavailable/dead, deployed, and already-high
-  enough units. Adjutants are distinguished from ordinary bench recipients.
+- Battle initialization, each battle-exit entry, its exit mode, and whether
+  catch-up was armed. The log header uses `diagnostic_schema=2`.
+- Captured battle actor IDs and normalized role flags, followed by the frozen
+  fighter IDs, settled level sum and count, rounded-down average, gap, target
+  floor, and number of recipients. Adjutants are distinguished from ordinary
+  bench recipients.
+- Every save roster slot's character ID, level, EXP, and raw flags after the
+  game's writeback/cleanup, before and after catch-up.
 - Each next-level threshold and EXP amount passed to the game's EXP function,
   its observed result, and any reason catch-up stopped.
-- Roster levels and EXP again after the original stage-clear function returns,
-  to detect immediate overwrites. This does not prove that a later manual save
-  will persist the change.
+- Reasons catch-up was skipped or stopped. These observations do not prove
+  that a later manual save and reload persist the change.
 
 For example, the default gap with a deployed average of 20 produces a target
 of 17. A bench unit already at level 17 will not gain EXP. If the file contains
-startup checks but no `stage_clear` entries after a victory, the selected hook
+startup checks but no `battle_exit` entries after leaving the result screen, the selected hook
 did not run; if there are entries, the plan and per-unit reasons show why
 catch-up did or did not happen.
 
@@ -120,12 +130,16 @@ a plugin load failure from an incorrect SD path or a file I/O error.
    bench unit's level, EXP, and stats.
 2. Win one short battle without deploying the bench unit. Include an adjutant
    if possible.
-3. After the stage-clear screen and a manual save, check whether the bench
+3. Leave the stage-clear/result screens, then manually save and check whether the bench
    unit rose toward `floor(deployed average) - level_gap`; deployed units
    should get only their original EXP.
 4. Reload that save and confirm that the levels and stats persist. If the game
    crashes, remove only `feth-bench-exp.nro`, keep the backed-up save, and
    provide Eden's log and the point of failure.
+
+The v0.1.3 timing change is checked against the 1.2.0 executable and covered
+by host regression tests, including the cleared-flags and low-level-adjutant
+cases. Hardware/emulator save-and-reload verification is still required.
 
 ## Credits
 

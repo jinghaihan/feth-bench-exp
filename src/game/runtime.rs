@@ -7,7 +7,7 @@ use core::{
 
 use crate::{
   diagnostics,
-  plan::{UnitSnapshot, MAX_LEVEL},
+  plan::{battle_snapshot, UnitSnapshot, MAX_LEVEL},
 };
 
 use super::profile;
@@ -82,13 +82,54 @@ impl Runtime {
   }
 
   fn global_pointer(self, offset: usize) -> Option<NonNull<u8>> {
-    // SAFETY: these two global slots were identified in the 1.2.0 main NSO.
+    // SAFETY: these global slots were identified in the 1.2.0 main NSO.
     let pointer = unsafe { self.address(offset).cast::<*mut u8>().read() };
     NonNull::new(pointer)
   }
 
   pub fn save(self) -> Option<NonNull<u8>> {
     self.global_pointer(profile::SAVE_POINTER_OFFSET)
+  }
+
+  pub fn battle_exit_mode(self) -> Option<u32> {
+    let manager = self.global_pointer(profile::BATTLE_MANAGER_GOT_OFFSET)?;
+    // SAFETY: 0x96690 reads this same manager field before selecting normal
+    // result writeback (0), rewind/event exit (3), or retreat (5).
+    Some(unsafe {
+      manager
+        .as_ptr()
+        .add(profile::BATTLE_EXIT_MODE_OFFSET)
+        .cast::<u32>()
+        .read_unaligned()
+    })
+  }
+
+  pub fn battle_snapshots(self) -> Option<Vec<UnitSnapshot>> {
+    let slot = self.global_pointer(profile::BATTLE_UNITS_GOT_OFFSET)?;
+    // SAFETY: the verified writeback loop uses this registry and all 105
+    // pointer slots at +8. The GOT points to the registry pointer, not records.
+    let registry = NonNull::new(unsafe { slot.as_ptr().cast::<*mut u8>().read() })?;
+    let mut units = Vec::new();
+    for index in 0..profile::BATTLE_UNIT_COUNT {
+      let pointer = unsafe {
+        registry
+          .as_ptr()
+          .add(8 + index * 8)
+          .cast::<*mut u8>()
+          .read()
+      };
+      let Some(unit) = NonNull::new(pointer) else {
+        continue;
+      };
+      // +D6 bit 0 participates in writeback, bit 5 is an adjutant; +F1
+      // is the battle side (0 = player). These survive save flag cleanup.
+      let state = unsafe { unit.as_ptr().add(0xD6).read() };
+      let side = unsafe { unit.as_ptr().add(0xF1).read() };
+      if let Some(snapshot) = battle_snapshot(unsafe { Self::snapshot(unit) }, state, side) {
+        units.push(snapshot);
+      }
+    }
+    Some(units)
   }
 
   pub unsafe fn save_unit(self, save: NonNull<u8>, index: usize) -> Option<NonNull<u8>> {
@@ -105,7 +146,7 @@ impl Runtime {
 
   pub unsafe fn snapshot(unit: NonNull<u8>) -> UnitSnapshot {
     let pointer = unit.as_ptr();
-    // SAFETY: the caller supplies one complete Unit record from the save array.
+    // SAFETY: save records and battle actors share this first 0xC4-byte layout.
     unsafe {
       UnitSnapshot {
         character: pointer.add(0x24).cast::<i16>().read_unaligned(),

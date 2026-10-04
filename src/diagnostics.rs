@@ -57,7 +57,7 @@ pub fn init() -> config::Settings {
   unsafe { fs::CreateFile(LOG_PATH.as_ptr(), 0) };
   ENABLED.store(true, Ordering::Release);
   log!(
-    "=== feth bench-exp diagnostic; new game launch; diagnostic_schema=1; plugin_version={}; level_gap={}; log_max_kib={} ===",
+    "=== feth bench-exp diagnostic; new game launch; diagnostic_schema=2; plugin_version={}; level_gap={}; log_max_kib={} ===",
     env!("CARGO_PKG_VERSION"), settings.level_gap, settings.log_max_kib
   );
   settings
