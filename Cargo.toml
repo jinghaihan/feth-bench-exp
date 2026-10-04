@@ -1,6 +1,6 @@
 [package]
 name = "feth-bench-exp"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Catch-up experience for benched Fire Emblem: Three Houses units"
 license = "MIT"
