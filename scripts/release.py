@@ -93,11 +93,11 @@ def main() -> None:
     return
 
   run("cargo", "fmt", "--check")
-  run("python3", "-m", "unittest", "discover", "-s", "tools", "-p", "test_*.py")
+  run("python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py")
   run("cargo", "test", "--locked")
   run("cargo", "skyline", "check")
   run("cargo", "skyline", "build", "--release")
-  run("python3", "tools/verify_nro.py", NRO)
+  run("python3", "scripts/verify_nro.py", NRO)
   if args.current:
     run("git", "commit", "--allow-empty", "-m", f"chore: release {tag}")
   else:
@@ -107,7 +107,7 @@ def main() -> None:
       write_version(selected)
       run("cargo", "check")
       run("cargo", "skyline", "build", "--release")
-      run("python3", "tools/verify_nro.py", NRO)
+      run("python3", "scripts/verify_nro.py", NRO)
     except BaseException:
       for path, contents in original_contents.items():
         path.write_bytes(contents)
